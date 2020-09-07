@@ -2,11 +2,12 @@ package pskreporter
 
 import (
 	"encoding/xml"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"net/url"
+
+	"github.com/pkg/errors"
 )
 
 const queryURL = "https://retrieve.pskreporter.info/query"
@@ -42,7 +43,9 @@ func Query(opts ...QueryOption) (*Response, error) {
 	}
 	defer resp.Body.Close()
 
-	log.Println(resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		return nil, errors.Errorf("unexpected http response %d", resp.StatusCode)
+	}
 
 	var r Response
 	if err := xml.NewDecoder(resp.Body).Decode(&r); err != nil {
