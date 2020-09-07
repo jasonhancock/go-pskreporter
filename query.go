@@ -94,3 +94,11 @@ func WithNoActive(i int) QueryOption {
 		return nil
 	}
 }
+
+// WithAppContact sets a contact email address in case the psk reporter folks want to get in touch.
+func WithAppContact(email string) QueryOption {
+	return func(o *options) error {
+		o.vals.Set("appcontact", email)
+		return nil
+	}
+}
