@@ -182,7 +182,7 @@ var errFlowStartGreaterDay = errors.New("WithFlowStartSeconds cannot be greater 
 var errFlowStartNotNegative = errors.New("WithFlowStartSeconds must be negative")
 
 // WithFlowStartSeconds is the negative number of seconds to indicate how much
-// data to retreive. This cannot be more than 24 hours.
+// data to retrieve. This cannot be more than 24 hours.
 func WithFlowStartSeconds(s int) QueryOption {
 	return func(o *queryOptions) error {
 		if s > 0 {
