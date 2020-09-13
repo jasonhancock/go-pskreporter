@@ -7,8 +7,13 @@ import (
 )
 
 func Example() {
+	c, err := pskr.New()
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	// Query for the people that heard callsign AG6K over the last 30 minutes.
-	r, err := pskr.Query(
+	r, err := c.Query(
 		pskr.WithSenderCallsign("AG6K"),
 		pskr.WithFlowStartSeconds(-1800),
 	)

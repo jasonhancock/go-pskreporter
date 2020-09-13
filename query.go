@@ -3,7 +3,6 @@ package pskreporter
 import (
 	"encoding/xml"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 
@@ -12,14 +11,71 @@ import (
 
 const queryURL = "https://retrieve.pskreporter.info/query"
 
+// Doer is an interface the http.Client conforms to.
+type Doer interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
+// Client is a client that will communicate with the PSKReporter service.
+type Client struct {
+	doer    Doer
+	baseURL string
+}
+
+// WithHTTPClient set the http client to use.
+func WithHTTPClient(c Doer) ClientOption {
+	return func(o *clientOptions) error {
+		o.doer = c
+		return nil
+	}
+}
+
+// WithBaseURL set the API base url to use.
+func WithBaseURL(s string) ClientOption {
+	return func(o *clientOptions) error {
+		if _, err := url.Parse(s); err != nil {
+			return err
+		}
+		o.baseURL = s
+		return nil
+	}
+}
+
+// New instantiates a new Client.
+func New(opts ...ClientOption) (*Client, error) {
+	o := &clientOptions{
+		doer:    http.DefaultClient,
+		baseURL: queryURL,
+	}
+
+	for _, opt := range opts {
+		if err := opt(o); err != nil {
+			return nil, err
+		}
+	}
+
+	return &Client{
+		doer:    o.doer,
+		baseURL: o.baseURL,
+	}, nil
+}
+
+type clientOptions struct {
+	doer    Doer
+	baseURL string
+}
+
+// ClientOption is used to customize the client.
+type ClientOption func(*clientOptions) error
+
 // Query executes a search query against the PSK Reporter API.
-func Query(opts ...QueryOption) (*Response, error) {
-	u, err := url.Parse(queryURL)
+func (c *Client) Query(opts ...QueryOption) (*Response, error) {
+	u, err := url.Parse(c.baseURL)
 	if err != nil {
 		return nil, err
 	}
 
-	o := options{
+	o := queryOptions{
 		vals: u.Query(),
 	}
 
@@ -30,14 +86,13 @@ func Query(opts ...QueryOption) (*Response, error) {
 	}
 
 	u.RawQuery = o.vals.Encode()
-	log.Println(u.String())
 
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.doer.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -55,16 +110,16 @@ func Query(opts ...QueryOption) (*Response, error) {
 	return &r, nil
 }
 
-type options struct {
+type queryOptions struct {
 	vals url.Values
 }
 
 // QueryOption is used to customize the query.
-type QueryOption func(*options) error
+type QueryOption func(*queryOptions) error
 
 // WithSenderCallsign set the sender callsign in the query.
 func WithSenderCallsign(s string) QueryOption {
-	return func(o *options) error {
+	return func(o *queryOptions) error {
 		if _, ok := o.vals["receiverCallsign"]; ok {
 			return errCallsignExclusive
 		}
@@ -78,7 +133,7 @@ func WithSenderCallsign(s string) QueryOption {
 
 // WithReceiverCallsign set the receiver callsign in the query.
 func WithReceiverCallsign(s string) QueryOption {
-	return func(o *options) error {
+	return func(o *queryOptions) error {
 		if _, ok := o.vals["senderCallsign"]; ok {
 			return errCallsignExclusive
 		}
@@ -94,7 +149,7 @@ var errCallsignExclusive = errors.New("only one of callsign, senderCallsign, or 
 
 // WithCallsign sets the Callsign of interest.
 func WithCallsign(s string) QueryOption {
-	return func(o *options) error {
+	return func(o *queryOptions) error {
 		if _, ok := o.vals["senderCallsign"]; ok {
 			return errCallsignExclusive
 		}
@@ -109,7 +164,7 @@ func WithCallsign(s string) QueryOption {
 
 // WithMode sets the mode of operation in the query.
 func WithMode(s string) QueryOption {
-	return func(o *options) error {
+	return func(o *queryOptions) error {
 		o.vals.Set("mode", s)
 		return nil
 	}
@@ -117,22 +172,25 @@ func WithMode(s string) QueryOption {
 
 // WithReportLimit limits the number of records returned.
 func WithReportLimit(s int) QueryOption {
-	return func(o *options) error {
+	return func(o *queryOptions) error {
 		o.vals.Set("rptlimit", fmt.Sprintf("%d", s))
 		return nil
 	}
 }
 
+var errFlowStartGreaterDay = errors.New("WithFlowStartSeconds cannot be greater than 24 hours")
+var errFlowStartNotNegative = errors.New("WithFlowStartSeconds must be negative")
+
 // WithFlowStartSeconds is the negative number of seconds to indicate how much
 // data to retreive. This cannot be more than 24 hours.
 func WithFlowStartSeconds(s int) QueryOption {
-	return func(o *options) error {
+	return func(o *queryOptions) error {
 		if s > 0 {
-			return errors.New("WithFlowStartSeconds must be negative")
+			return errFlowStartNotNegative
 		}
 
 		if s < -86400 {
-			return errors.New("WithFlowStartSeconds cannot be greater than 24 hours")
+			return errFlowStartGreaterDay
 		}
 
 		o.vals.Set("flowStartSeconds", fmt.Sprintf("%d", s))
@@ -142,7 +200,7 @@ func WithFlowStartSeconds(s int) QueryOption {
 
 // WithNoActive will not return the active monitors if non zero.
 func WithNoActive(i int) QueryOption {
-	return func(o *options) error {
+	return func(o *queryOptions) error {
 		o.vals.Set("noactive", fmt.Sprintf("%d", i))
 		return nil
 	}
@@ -150,7 +208,7 @@ func WithNoActive(i int) QueryOption {
 
 // WithAppContact sets a contact email address in case the psk reporter folks want to get in touch.
 func WithAppContact(email string) QueryOption {
-	return func(o *options) error {
+	return func(o *queryOptions) error {
 		o.vals.Set("appcontact", email)
 		return nil
 	}
@@ -158,17 +216,19 @@ func WithAppContact(email string) QueryOption {
 
 // WithRROnly will only return the reception reports if non-zero.
 func WithRROnly(i int) QueryOption {
-	return func(o *options) error {
+	return func(o *queryOptions) error {
 		o.vals.Set("rronly", fmt.Sprintf("%d", i))
 		return nil
 	}
 }
 
+var errLowerFrequencyGreaterThanUpper = errors.New("lower frequency must be less than upper frequency")
+
 // WithFrequencyRange sets a lower and upper bound for frequencies. Example: 14000000-14100000
 func WithFrequencyRange(lower, upper int) QueryOption {
-	return func(o *options) error {
+	return func(o *queryOptions) error {
 		if lower > upper {
-			return errors.New("lower frequency must be less than upper frequency")
+			return errLowerFrequencyGreaterThanUpper
 		}
 		o.vals.Set("frange", fmt.Sprintf("%d-%d", lower, upper))
 		return nil
@@ -177,7 +237,7 @@ func WithFrequencyRange(lower, upper int) QueryOption {
 
 // WithNoLocator will return reception reports without a locator if non-zero.
 func WithNoLocator(i int) QueryOption {
-	return func(o *options) error {
+	return func(o *queryOptions) error {
 		o.vals.Set("nolocator", fmt.Sprintf("%d", i))
 		return nil
 	}
@@ -185,7 +245,7 @@ func WithNoLocator(i int) QueryOption {
 
 // WithStatistics will return some statistics if non-zero.
 func WithStatistics(i int) QueryOption {
-	return func(o *options) error {
+	return func(o *queryOptions) error {
 		o.vals.Set("statistics", fmt.Sprintf("%d", i))
 		return nil
 	}
@@ -193,7 +253,7 @@ func WithStatistics(i int) QueryOption {
 
 // WithLastSequenceNumber sets the last sequence number in the query.
 func WithLastSequenceNumber(s string) QueryOption {
-	return func(o *options) error {
+	return func(o *queryOptions) error {
 		o.vals.Set("lastseqno", s)
 		return nil
 	}
