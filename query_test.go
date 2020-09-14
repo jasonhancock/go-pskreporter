@@ -2,11 +2,13 @@ package pskreporter
 
 import (
 	"io"
+	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/require"
@@ -14,27 +16,112 @@ import (
 
 func TestQuery(t *testing.T) {
 	t.Run("no error", func(t *testing.T) {
-		mux := http.NewServeMux()
-		mux.HandleFunc("/foo", func(w http.ResponseWriter, req *http.Request) {
-			fh, err := os.Open("testdata/output.xml")
-			if err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			defer fh.Close()
+		t.Run("normal", func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/foo", func(w http.ResponseWriter, req *http.Request) {
+				fh, err := os.Open("testdata/output.xml")
+				if err != nil {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				defer fh.Close()
 
-			io.Copy(w, fh)
+				io.Copy(w, fh)
+			})
+
+			svr := httptest.NewServer(mux)
+			defer svr.Close()
+
+			c, err := New(WithBaseURL(svr.URL + "/foo"))
+			require.NoError(t, err)
+
+			resp, err := c.Query(WithCallsign("AG6K"))
+			require.NoError(t, err)
+			checkResponse(t, resp)
 		})
 
-		svr := httptest.NewServer(mux)
-		defer svr.Close()
+		t.Run("caching enabled", func(t *testing.T) {
+			mux := http.NewServeMux()
+			count := 0
+			mux.HandleFunc("/foo", func(w http.ResponseWriter, req *http.Request) {
+				count++
+				fh, err := os.Open("testdata/output.xml")
+				if err != nil {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				defer fh.Close()
 
-		c, err := New(WithBaseURL(svr.URL + "/foo"))
-		require.NoError(t, err)
+				io.Copy(w, fh)
+			})
 
-		resp, err := c.Query(WithCallsign("AG6K"))
-		require.NoError(t, err)
-		checkResponse(t, resp)
+			svr := httptest.NewServer(mux)
+			defer svr.Close()
+
+			dir, err := ioutil.TempDir("", "")
+			require.NoError(t, err)
+			defer os.RemoveAll(dir)
+
+			c, err := New(
+				WithBaseURL(svr.URL+"/foo"),
+				WithCacheDir(dir),
+			)
+			require.NoError(t, err)
+
+			resp, err := c.Query(WithCallsign("AG6K"))
+			require.NoError(t, err)
+			checkResponse(t, resp)
+			require.Equal(t, 1, count)
+
+			resp, err = c.Query(WithCallsign("AG6K"))
+			require.NoError(t, err)
+			checkResponse(t, resp)
+			require.Equal(t, 1, count) // result should have been served from cache
+
+		})
+
+		t.Run("caching enabled, expired response in cache", func(t *testing.T) {
+			mux := http.NewServeMux()
+			count := 0
+			mux.HandleFunc("/foo", func(w http.ResponseWriter, req *http.Request) {
+				count++
+				fh, err := os.Open("testdata/output.xml")
+				if err != nil {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				defer fh.Close()
+
+				io.Copy(w, fh)
+			})
+
+			svr := httptest.NewServer(mux)
+			defer svr.Close()
+
+			dir, err := ioutil.TempDir("", "")
+			require.NoError(t, err)
+			defer os.RemoveAll(dir)
+
+			c, err := New(
+				WithBaseURL(svr.URL+"/foo"),
+				WithCacheDir(dir),
+				WithCacheDuration(500*time.Millisecond),
+			)
+			require.NoError(t, err)
+
+			resp, err := c.Query(WithCallsign("AG6K"))
+			require.NoError(t, err)
+			checkResponse(t, resp)
+			require.Equal(t, 1, count)
+
+			time.Sleep(1500 * time.Millisecond)
+
+			resp, err = c.Query(WithCallsign("AG6K"))
+			require.NoError(t, err)
+			checkResponse(t, resp)
+			require.Equal(t, 2, count) // cached result should have been expired.
+
+		})
 	})
 
 	t.Run("errors", func(t *testing.T) {
@@ -268,4 +355,8 @@ func TestQueryOptions(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestHash(t *testing.T) {
+	require.Equal(t, "e99a18c428cb38d5f260853678922e03", hash("abc123"))
 }

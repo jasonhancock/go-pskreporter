@@ -1,10 +1,16 @@
 package pskreporter
 
 import (
+	"crypto/md5"
 	"encoding/xml"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/pkg/errors"
 )
@@ -18,8 +24,10 @@ type Doer interface {
 
 // Client is a client that will communicate with the PSKReporter service.
 type Client struct {
-	doer    Doer
-	baseURL string
+	doer          Doer
+	baseURL       string
+	cacheDir      string
+	cacheDuration time.Duration
 }
 
 // WithHTTPClient set the http client to use.
@@ -41,11 +49,32 @@ func WithBaseURL(s string) ClientOption {
 	}
 }
 
+// WithCacheDir will turn on caching. Directory must already exist.
+func WithCacheDir(dir string) ClientOption {
+	return func(o *clientOptions) error {
+		o.cacheDir = dir
+		return nil
+	}
+}
+
+// WithCacheDuration determines how long a result will be served out of the cache
+// before fetching a new one.
+func WithCacheDuration(dur time.Duration) ClientOption {
+	return func(o *clientOptions) error {
+		if dur < 0 {
+			return errors.New("cache duration must be positive")
+		}
+		o.cacheDuration = dur
+		return nil
+	}
+}
+
 // New instantiates a new Client.
 func New(opts ...ClientOption) (*Client, error) {
 	o := &clientOptions{
-		doer:    http.DefaultClient,
-		baseURL: queryURL,
+		doer:          http.DefaultClient,
+		baseURL:       queryURL,
+		cacheDuration: 280 * time.Second,
 	}
 
 	for _, opt := range opts {
@@ -55,14 +84,18 @@ func New(opts ...ClientOption) (*Client, error) {
 	}
 
 	return &Client{
-		doer:    o.doer,
-		baseURL: o.baseURL,
+		doer:          o.doer,
+		baseURL:       o.baseURL,
+		cacheDir:      o.cacheDir,
+		cacheDuration: o.cacheDuration,
 	}, nil
 }
 
 type clientOptions struct {
-	doer    Doer
-	baseURL string
+	doer          Doer
+	baseURL       string
+	cacheDir      string
+	cacheDuration time.Duration
 }
 
 // ClientOption is used to customize the client.
@@ -87,6 +120,25 @@ func (c *Client) Query(opts ...QueryOption) (*Response, error) {
 
 	u.RawQuery = o.vals.Encode()
 
+	if c.cacheDir != "" {
+		file := filepath.Join(c.cacheDir, hash(u.RawQuery))
+		if fi, err := os.Stat(file); err == nil {
+			if fi.ModTime().After(time.Now().Add(-1 * c.cacheDuration)) {
+				fh, err := os.Open(file)
+				if err != nil {
+					return nil, errors.Wrap(err, "opening cached file")
+				}
+				defer fh.Close()
+				var r Response
+				if err := xml.NewDecoder(fh).Decode(&r); err == nil {
+					return &r, nil
+				}
+				// If we're here, there was an error, with the cached result, so go ahead and
+				// make the request.
+			}
+		}
+	}
+
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
@@ -102,9 +154,23 @@ func (c *Client) Query(opts ...QueryOption) (*Response, error) {
 		return nil, errors.Errorf("unexpected http response %d", resp.StatusCode)
 	}
 
+	b, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, errors.Wrap(err, "reading response")
+	}
+
 	var r Response
-	if err := xml.NewDecoder(resp.Body).Decode(&r); err != nil {
+	if err := xml.Unmarshal(b, &r); err != nil {
 		return nil, err
+	}
+
+	if c.cacheDir != "" {
+		file := filepath.Join(c.cacheDir, hash(u.RawQuery))
+		fh, err := os.Create(file)
+		if err == nil {
+			defer fh.Close()
+			fh.Write(b)
+		}
 	}
 
 	return &r, nil
@@ -257,4 +323,13 @@ func WithLastSequenceNumber(s string) QueryOption {
 		o.vals.Set("lastseqno", s)
 		return nil
 	}
+}
+
+// hash computes the md5 checksum of the given strings
+func hash(args ...string) string {
+	h := md5.New()
+	for _, arg := range args {
+		io.WriteString(h, arg)
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
 }
