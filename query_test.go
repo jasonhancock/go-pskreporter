@@ -1,8 +1,8 @@
 package pskreporter
 
 import (
+	"errors"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/stretchr/testify/require"
 )
 
@@ -58,9 +57,7 @@ func TestQuery(t *testing.T) {
 			svr := httptest.NewServer(mux)
 			defer svr.Close()
 
-			dir, err := ioutil.TempDir("", "")
-			require.NoError(t, err)
-			defer os.RemoveAll(dir)
+			dir := t.TempDir()
 
 			c, err := New(
 				WithBaseURL(svr.URL+"/foo"),
@@ -98,9 +95,7 @@ func TestQuery(t *testing.T) {
 			svr := httptest.NewServer(mux)
 			defer svr.Close()
 
-			dir, err := ioutil.TempDir("", "")
-			require.NoError(t, err)
-			defer os.RemoveAll(dir)
+			dir := t.TempDir()
 
 			c, err := New(
 				WithBaseURL(svr.URL+"/foo"),

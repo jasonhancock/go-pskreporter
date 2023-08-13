@@ -3,16 +3,14 @@ package pskreporter
 import (
 	"crypto/md5"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"time"
-
-	"github.com/pkg/errors"
 )
 
 const queryURL = "https://retrieve.pskreporter.info/query"
@@ -126,7 +124,7 @@ func (c *Client) Query(opts ...QueryOption) (*Response, error) {
 			if fi.ModTime().After(time.Now().Add(-1 * c.cacheDuration)) {
 				fh, err := os.Open(file)
 				if err != nil {
-					return nil, errors.Wrap(err, "opening cached file")
+					return nil, fmt.Errorf("opening cached file: %w", err)
 				}
 				defer fh.Close()
 				var r Response
@@ -151,12 +149,12 @@ func (c *Client) Query(opts ...QueryOption) (*Response, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, errors.Errorf("unexpected http response %d", resp.StatusCode)
+		return nil, fmt.Errorf("unexpected http response %d", resp.StatusCode)
 	}
 
-	b, err := ioutil.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, errors.Wrap(err, "reading response")
+		return nil, fmt.Errorf("reading response: %w", err)
 	}
 
 	var r Response
